@@ -78,6 +78,7 @@ CONTRACT_TAG_CATALOG_PATH = REPO_ROOT / "data" / "public" / "contract_tags.json"
 WEB_PUBLIC_ROOT = REPO_ROOT / "apps" / "web" / "public"
 AKEDATA_ASSET_HOSTS = {"www.akedata.top", "akedata.top"}
 HOT_BOSSES_CACHE_TTL_SECONDS = 30.0
+PUBLIC_ACCOUNT_DIRECTORY_CACHE_TTL_SECONDS = 30.0
 # TTL backstop for the uploaded-battle list cache: writers are expected to call
 # _invalidate_public_caches(), the TTL only covers writers outside this service.
 BATTLE_LIST_CACHE_TTL_SECONDS = 30.0
@@ -1609,6 +1610,9 @@ class DemoPublicDataService:
     def __init__(self) -> None:
         self.bosses_by_slug = {boss.slug: boss for boss in BOSS_SEEDS}
         self._hot_bosses_cache: tuple[float, list[HotBossCard]] | None = None
+        self._public_account_directory_cache: (
+            tuple[float, PublicAccountDirectoryResponse] | None
+        ) = None
         self._battle_list_cache: dict[tuple[str | None, bool], tuple[float, list[DemoBattle]]] = {}
         self._battle_list_cache_lock = threading.Lock()
         self._sync_uploaded_boss_catalog()
@@ -1656,6 +1660,7 @@ class DemoPublicDataService:
 
     def _invalidate_public_caches(self) -> None:
         self._hot_bosses_cache = None
+        self._public_account_directory_cache = None
         with self._battle_list_cache_lock:
             self._battle_list_cache.clear()
 
@@ -2139,6 +2144,12 @@ class DemoPublicDataService:
         )
 
     def list_public_accounts(self) -> PublicAccountDirectoryResponse:
+        now = monotonic()
+        if self._public_account_directory_cache is not None:
+            expires_at, response = self._public_account_directory_cache
+            if expires_at > now:
+                return response
+
         with SessionLocal() as session:
             public_rows = session.execute(
                 select(
@@ -2193,10 +2204,15 @@ class DemoPublicDataService:
                 account.accountId,
             )
         )
-        return PublicAccountDirectoryResponse(
+        response = PublicAccountDirectoryResponse(
             totalAccounts=len(accounts),
             accounts=accounts,
         )
+        self._public_account_directory_cache = (
+            now + PUBLIC_ACCOUNT_DIRECTORY_CACHE_TTL_SECONDS,
+            response,
+        )
+        return response
 
     def get_public_user_rankings(self, account_id: str) -> PublicUserRankingsResponse:
         normalized_account_id = account_id.strip()

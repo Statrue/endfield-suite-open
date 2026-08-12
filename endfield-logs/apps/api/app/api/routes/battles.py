@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Request
+import hashlib
+import json
+
+from fastapi import APIRouter, Request, Response
 
 from app.schemas.public import (
     BattleDetailResponse,
@@ -32,8 +35,27 @@ def get_my_battles(request: Request) -> UserBattlesResponse:
 
 
 @router.get("/users", response_model=PublicAccountDirectoryResponse)
-def list_public_accounts() -> PublicAccountDirectoryResponse:
-    return public_data_service.list_public_accounts()
+def list_public_accounts(
+    request: Request,
+    response: Response,
+) -> PublicAccountDirectoryResponse:
+    payload = public_data_service.list_public_accounts()
+    content_hash = hashlib.md5(
+        json.dumps(
+            payload.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    etag = f'W/"{content_hash}"'
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "public, max-age=60"
+    if request.headers.get("if-none-match") == etag:
+        return Response(  # type: ignore[return-value]
+            status_code=304,
+            headers=dict(response.headers),
+        )
+    return payload
 
 
 @router.get("/users/{account_id}/rankings", response_model=PublicUserRankingsResponse)

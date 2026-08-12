@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from threading import Lock
 
 from app.api.routes import battles as battle_routes
 from app.db.models import AuthUserRecord, Base, UploadedBattleRecord
@@ -50,6 +51,15 @@ def _battle_record(
         status=status,
         created_at=battle_end_at,
     )
+
+
+def _directory_service() -> DemoPublicDataService:
+    service = DemoPublicDataService.__new__(DemoPublicDataService)
+    service._hot_bosses_cache = None
+    service._public_account_directory_cache = None
+    service._battle_list_cache = {}
+    service._battle_list_cache_lock = Lock()
+    return service
 
 
 def test_directory_uses_only_valid_public_clears_without_parser_gate(
@@ -120,9 +130,7 @@ def test_directory_uses_only_valid_public_clears_without_parser_gate(
 
     monkeypatch.setattr(public_data, "SessionLocal", test_session)
 
-    response = DemoPublicDataService.__new__(
-        DemoPublicDataService
-    ).list_public_accounts()
+    response = _directory_service().list_public_accounts()
 
     assert response == PublicAccountDirectoryResponse(
         totalAccounts=2,
@@ -158,6 +166,9 @@ def test_directory_route_returns_the_minimal_public_contract(monkeypatch) -> Non
     response = TestClient(app).get("/api/battles/users")
 
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=60"
+    etag = response.headers["etag"]
+    assert etag.startswith('W/"') and len(etag) > 20
     assert response.json() == {
         "totalAccounts": 1,
         "accounts": [
@@ -167,3 +178,34 @@ def test_directory_route_returns_the_minimal_public_contract(monkeypatch) -> Non
             }
         ],
     }
+
+    cached = TestClient(app).get(
+        "/api/battles/users",
+        headers={"If-None-Match": etag},
+    )
+    assert cached.status_code == 304
+    assert cached.content == b""
+
+
+def test_directory_service_cache_is_cleared_with_other_public_caches(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    test_session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(bind=engine)
+    service = _directory_service()
+    monkeypatch.setattr(public_data, "SessionLocal", test_session)
+
+    with test_session() as session:
+        session.add(_battle_record("first", "user-a", "Alpha"))
+        session.commit()
+
+    assert service.list_public_accounts().totalAccounts == 1
+
+    with test_session() as session:
+        session.add(_battle_record("second", "user-b", "Beta"))
+        session.commit()
+
+    assert service.list_public_accounts().totalAccounts == 1
+    service._invalidate_public_caches()
+    assert service.list_public_accounts().totalAccounts == 2
