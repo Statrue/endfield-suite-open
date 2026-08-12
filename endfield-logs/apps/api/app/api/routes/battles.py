@@ -3,6 +3,7 @@ from fastapi import APIRouter, Request
 from app.schemas.public import (
     BattleDetailResponse,
     DeleteBattleResponse,
+    PublicAccountDirectoryResponse,
     PublicUserRankingsResponse,
     ShareSummaryResponse,
     UserBattlesResponse,
@@ -28,6 +29,11 @@ def get_my_battles(request: Request) -> UserBattlesResponse:
     viewer = auth_service.get_user_from_session(session_token)
     viewer_user_id = viewer.id if viewer else None
     return public_data_service.list_user_battles(viewer_user_id)
+
+
+@router.get("/users", response_model=PublicAccountDirectoryResponse)
+def list_public_accounts() -> PublicAccountDirectoryResponse:
+    return public_data_service.list_public_accounts()
 
 
 @router.get("/users/{account_id}/rankings", response_model=PublicUserRankingsResponse)

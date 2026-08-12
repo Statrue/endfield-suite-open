@@ -363,5 +363,15 @@ class PublicUserRankingsResponse(BaseModel):
     rankings: list[UserBossRankingResponse] = Field(default_factory=list)
 
 
+class PublicAccountDirectoryEntryResponse(BaseModel):
+    accountId: str
+    accountDisplayName: str
+
+
+class PublicAccountDirectoryResponse(BaseModel):
+    totalAccounts: int
+    accounts: list[PublicAccountDirectoryEntryResponse] = Field(default_factory=list)
+
+
 class DeleteBattleResponse(BaseModel):
     ok: bool

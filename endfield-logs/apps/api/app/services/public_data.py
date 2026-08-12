@@ -11,6 +11,7 @@ from pathlib import Path
 from re import sub
 from time import monotonic
 from typing import Any, Literal
+from unicodedata import normalize
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -19,7 +20,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import load_only
 
 from app.core.errors import AppError
-from app.db.models import UploadedBattleRecord
+from app.db.models import AuthUserRecord, UploadedBattleRecord
 from app.db.session import SessionLocal
 from app.schemas.public import (
     BattleDetailResponse,
@@ -42,6 +43,8 @@ from app.schemas.public import (
     ContractTagResponse,
     HotBossCard,
     HotBossRun,
+    PublicAccountDirectoryEntryResponse,
+    PublicAccountDirectoryResponse,
     PublicUserRankingsResponse,
     RoleSkillStatResponse,
     ShareSummaryResponse,
@@ -2133,6 +2136,66 @@ class DemoPublicDataService:
         return UserBattlesResponse(
             battles=battles,
             rankings=self._list_user_boss_rankings(viewer_user_id),
+        )
+
+    def list_public_accounts(self) -> PublicAccountDirectoryResponse:
+        with SessionLocal() as session:
+            public_rows = session.execute(
+                select(
+                    UploadedBattleRecord.uploader_user_id,
+                    UploadedBattleRecord.uploader_nickname,
+                )
+                .where(
+                    UploadedBattleRecord.status == "valid",
+                    UploadedBattleRecord.visibility == "public",
+                    UploadedBattleRecord.clear_flag.is_(True),
+                    UploadedBattleRecord.uploader_user_id != "",
+                )
+                .order_by(
+                    UploadedBattleRecord.uploader_user_id.asc(),
+                    UploadedBattleRecord.battle_end_at.desc(),
+                    UploadedBattleRecord.created_at.desc(),
+                )
+            ).all()
+
+            fallback_names: dict[str, str] = {}
+            for account_id, display_name in public_rows:
+                normalized_account_id = account_id.strip()
+                if not normalized_account_id or normalized_account_id in fallback_names:
+                    continue
+                fallback_names[normalized_account_id] = (
+                    display_name.strip() or normalized_account_id
+                )
+
+            current_names = {
+                account_id: nickname.strip()
+                for account_id, nickname in session.execute(
+                    select(AuthUserRecord.id, AuthUserRecord.nickname).where(
+                        AuthUserRecord.id.in_(tuple(fallback_names))
+                    )
+                ).all()
+                if nickname.strip()
+            }
+
+        accounts = [
+            PublicAccountDirectoryEntryResponse(
+                accountId=account_id,
+                accountDisplayName=current_names.get(
+                    account_id,
+                    fallback_display_name,
+                ),
+            )
+            for account_id, fallback_display_name in fallback_names.items()
+        ]
+        accounts.sort(
+            key=lambda account: (
+                normalize("NFKC", account.accountDisplayName).casefold(),
+                account.accountId,
+            )
+        )
+        return PublicAccountDirectoryResponse(
+            totalAccounts=len(accounts),
+            accounts=accounts,
         )
 
     def get_public_user_rankings(self, account_id: str) -> PublicUserRankingsResponse:
