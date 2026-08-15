@@ -1,12 +1,12 @@
 import hashlib
 import json
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from app.schemas.public import (
     BattleDetailResponse,
     DeleteBattleResponse,
-    PublicAccountDirectoryResponse,
+    PublicAccountSearchResponse,
     PublicUserRankingsResponse,
     ShareSummaryResponse,
     UserBattlesResponse,
@@ -34,12 +34,14 @@ def get_my_battles(request: Request) -> UserBattlesResponse:
     return public_data_service.list_user_battles(viewer_user_id)
 
 
-@router.get("/users", response_model=PublicAccountDirectoryResponse)
-def list_public_accounts(
+@router.get("/users", response_model=PublicAccountSearchResponse)
+def search_public_accounts(
     request: Request,
     response: Response,
-) -> PublicAccountDirectoryResponse:
-    payload = public_data_service.list_public_accounts()
+    query: str = Query(min_length=2, max_length=128),
+    limit: int = Query(default=10, ge=1, le=20),
+) -> PublicAccountSearchResponse:
+    payload = public_data_service.search_public_accounts(query=query, limit=limit)
     content_hash = hashlib.md5(
         json.dumps(
             payload.model_dump(mode="json"),

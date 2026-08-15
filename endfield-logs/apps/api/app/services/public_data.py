@@ -15,7 +15,7 @@ from unicodedata import normalize
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import load_only
 
@@ -43,8 +43,8 @@ from app.schemas.public import (
     ContractTagResponse,
     HotBossCard,
     HotBossRun,
-    PublicAccountDirectoryEntryResponse,
-    PublicAccountDirectoryResponse,
+    PublicAccountSearchEntryResponse,
+    PublicAccountSearchResponse,
     PublicUserRankingsResponse,
     RoleSkillStatResponse,
     ShareSummaryResponse,
@@ -78,7 +78,9 @@ CONTRACT_TAG_CATALOG_PATH = REPO_ROOT / "data" / "public" / "contract_tags.json"
 WEB_PUBLIC_ROOT = REPO_ROOT / "apps" / "web" / "public"
 AKEDATA_ASSET_HOSTS = {"www.akedata.top", "akedata.top"}
 HOT_BOSSES_CACHE_TTL_SECONDS = 30.0
-PUBLIC_ACCOUNT_DIRECTORY_CACHE_TTL_SECONDS = 30.0
+PUBLIC_ACCOUNT_SEARCH_CACHE_TTL_SECONDS = 30.0
+PUBLIC_ACCOUNT_SEARCH_CACHE_MAX_ENTRIES = 256
+PUBLIC_ACCOUNT_SEARCH_SCAN_LIMIT = 100
 # TTL backstop for the uploaded-battle list cache: writers are expected to call
 # _invalidate_public_caches(), the TTL only covers writers outside this service.
 BATTLE_LIST_CACHE_TTL_SECONDS = 30.0
@@ -1610,9 +1612,11 @@ class DemoPublicDataService:
     def __init__(self) -> None:
         self.bosses_by_slug = {boss.slug: boss for boss in BOSS_SEEDS}
         self._hot_bosses_cache: tuple[float, list[HotBossCard]] | None = None
-        self._public_account_directory_cache: (
-            tuple[float, PublicAccountDirectoryResponse] | None
-        ) = None
+        self._public_account_search_cache: dict[
+            tuple[str, int],
+            tuple[float, PublicAccountSearchResponse],
+        ] = {}
+        self._public_account_search_cache_lock = threading.Lock()
         self._battle_list_cache: dict[tuple[str | None, bool], tuple[float, list[DemoBattle]]] = {}
         self._battle_list_cache_lock = threading.Lock()
         self._sync_uploaded_boss_catalog()
@@ -1660,7 +1664,8 @@ class DemoPublicDataService:
 
     def _invalidate_public_caches(self) -> None:
         self._hot_bosses_cache = None
-        self._public_account_directory_cache = None
+        with self._public_account_search_cache_lock:
+            self._public_account_search_cache.clear()
         with self._battle_list_cache_lock:
             self._battle_list_cache.clear()
 
@@ -2143,75 +2148,163 @@ class DemoPublicDataService:
             rankings=self._list_user_boss_rankings(viewer_user_id),
         )
 
-    def list_public_accounts(self) -> PublicAccountDirectoryResponse:
+    def search_public_accounts(self, *, query: str, limit: int) -> PublicAccountSearchResponse:
+        display_query = normalize("NFKC", query).strip()
+        if len(display_query) < 2:
+            raise AppError(
+                status_code=422,
+                code="account_query_too_short",
+                message="账号搜索关键词至少需要两个字符。",
+            )
+
+        # 搜索结果短期缓存；公开数据变化时由 _invalidate_public_caches() 统一清空。
+        cache_key = (display_query, limit)
         now = monotonic()
-        if self._public_account_directory_cache is not None:
-            expires_at, response = self._public_account_directory_cache
+        with self._public_account_search_cache_lock:
+            cached = self._public_account_search_cache.get(cache_key)
+        if cached is not None:
+            expires_at, response = cached
             if expires_at > now:
                 return response
 
-        with SessionLocal() as session:
-            public_rows = session.execute(
-                select(
-                    UploadedBattleRecord.uploader_user_id,
-                    UploadedBattleRecord.uploader_nickname,
+        # 这里只做数据库层初筛，最终是否属于公开榜单仍复用正式榜单规则判断。
+        qualifying_upload = (
+            UploadedBattleRecord.status == "valid",
+            UploadedBattleRecord.visibility == "public",
+            UploadedBattleRecord.clear_flag.is_(True),
+            UploadedBattleRecord.official_timer_end_seen.is_(True),
+            UploadedBattleRecord.time_source == "game_timer",
+            UploadedBattleRecord.uploader_user_id != "",
+        )
+        latest_upload_rows = (
+            select(
+                UploadedBattleRecord.uploader_user_id.label("account_id"),
+                UploadedBattleRecord.uploader_nickname.label("fallback_display_name"),
+                func.row_number()
+                .over(
+                    partition_by=UploadedBattleRecord.uploader_user_id,
+                    order_by=(
+                        UploadedBattleRecord.battle_end_at.desc(),
+                        UploadedBattleRecord.created_at.desc(),
+                    ),
                 )
-                .where(
-                    UploadedBattleRecord.status == "valid",
-                    UploadedBattleRecord.visibility == "public",
-                    UploadedBattleRecord.clear_flag.is_(True),
-                    UploadedBattleRecord.uploader_user_id != "",
-                )
-                .order_by(
-                    UploadedBattleRecord.uploader_user_id.asc(),
-                    UploadedBattleRecord.battle_end_at.desc(),
-                    UploadedBattleRecord.created_at.desc(),
-                )
-            ).all()
+                .label("row_number"),
+            )
+            .where(*qualifying_upload)
+            .subquery()
+        )
+        latest_names = (
+            select(
+                latest_upload_rows.c.account_id,
+                latest_upload_rows.c.fallback_display_name,
+            )
+            .where(latest_upload_rows.c.row_number == 1)
+            .subquery()
+        )
+        # 优先搜索账号当前昵称；账号资料缺失时回退到最近一次合格上传的昵称。
+        display_name = func.coalesce(
+            func.nullif(func.trim(AuthUserRecord.nickname), ""),
+            latest_names.c.fallback_display_name,
+        )
+        # 正式榜单复核可能淘汰候选，因此适量超取；无论请求多少都最多扫描 100 人。
+        scan_limit = min(PUBLIC_ACCOUNT_SEARCH_SCAN_LIMIT, max(limit * 5, limit + 1))
 
-            fallback_names: dict[str, str] = {}
-            for account_id, display_name in public_rows:
-                normalized_account_id = account_id.strip()
-                if not normalized_account_id or normalized_account_id in fallback_names:
-                    continue
-                fallback_names[normalized_account_id] = (
-                    display_name.strip() or normalized_account_id
-                )
-
-            current_names = {
-                account_id: nickname.strip()
-                for account_id, nickname in session.execute(
-                    select(AuthUserRecord.id, AuthUserRecord.nickname).where(
-                        AuthUserRecord.id.in_(tuple(fallback_names))
+        try:
+            with SessionLocal() as session:
+                candidate_rows = session.execute(
+                    select(
+                        latest_names.c.account_id,
+                        display_name.label("display_name"),
                     )
+                    .outerjoin(AuthUserRecord, AuthUserRecord.id == latest_names.c.account_id)
+                    # 上游只做不区分大小写的字面包含查询；变体生成和相似度排序交给下游。
+                    .where(display_name.icontains(display_query, autoescape=True))
+                    .order_by(
+                        func.lower(display_name),
+                        latest_names.c.account_id,
+                    )
+                    .limit(scan_limit + 1)
                 ).all()
-                if nickname.strip()
-            }
+                candidates_truncated = len(candidate_rows) > scan_limit
+                candidate_rows = candidate_rows[:scan_limit]
+                candidate_ids = tuple(row.account_id for row in candidate_rows)
+                # 只加载候选账号涉及的 Boss，避免为一次昵称搜索计算全部公开榜单。
+                account_boss_rows = (
+                    session.execute(
+                        select(
+                            UploadedBattleRecord.uploader_user_id,
+                            UploadedBattleRecord.boss_slug,
+                            UploadedBattleRecord.boss_key,
+                        )
+                        .where(
+                            *qualifying_upload,
+                            UploadedBattleRecord.uploader_user_id.in_(candidate_ids),
+                        )
+                        .distinct()
+                    ).all()
+                    if candidate_ids
+                    else []
+                )
+        except OperationalError:
+            return PublicAccountSearchResponse(
+                query=display_query,
+                hasMore=False,
+                accounts=[],
+            )
 
-        accounts = [
-            PublicAccountDirectoryEntryResponse(
-                accountId=account_id,
-                accountDisplayName=current_names.get(
-                    account_id,
-                    fallback_display_name,
-                ),
+        candidate_id_set = set(candidate_ids)
+        relevant_boss_slugs = {
+            self._canonical_uploaded_boss_slug(boss_slug, boss_key)
+            for _, boss_slug, boss_key in account_boss_rows
+        }
+        # 复用正式公开榜单入口，统一处理解析器版本、计时和假通关等准入条件。
+        ranked_account_ids: set[str] = set()
+        for boss_slug in relevant_boss_slugs:
+            if _is_inactive_season_tower_stage(boss_slug):
+                continue
+            public_battles = [
+                battle
+                for battle in self._list_uploaded_battle_summaries(boss_slug=boss_slug)
+                if battle.visibility == "public"
+            ]
+            ranked_account_ids.update(
+                battle.uploader_user_id
+                for battle in self._best_public_battles_by_account(public_battles)
+                if battle.uploader_user_id in candidate_id_set
             )
-            for account_id, fallback_display_name in fallback_names.items()
+
+        matched_accounts = [
+            PublicAccountSearchEntryResponse(
+                accountId=row.account_id,
+                accountDisplayName=row.display_name.strip() or row.account_id,
+            )
+            for row in candidate_rows
+            if row.account_id in ranked_account_ids
         ]
-        accounts.sort(
-            key=lambda account: (
-                normalize("NFKC", account.accountDisplayName).casefold(),
-                account.accountId,
+        # hasMore 仅提示应继续细化关键词；接口不开放分页遍历账号目录。
+        response = PublicAccountSearchResponse(
+            query=display_query,
+            hasMore=candidates_truncated or len(matched_accounts) > limit,
+            accounts=matched_accounts[:limit],
+        )
+        with self._public_account_search_cache_lock:
+            # 避免不同关键词持续占用内存：先清过期项，再淘汰最早过期的一项。
+            if len(self._public_account_search_cache) >= PUBLIC_ACCOUNT_SEARCH_CACHE_MAX_ENTRIES:
+                self._public_account_search_cache = {
+                    key: value
+                    for key, value in self._public_account_search_cache.items()
+                    if value[0] > now
+                }
+            if len(self._public_account_search_cache) >= PUBLIC_ACCOUNT_SEARCH_CACHE_MAX_ENTRIES:
+                oldest_key = min(
+                    self._public_account_search_cache,
+                    key=lambda key: self._public_account_search_cache[key][0],
+                )
+                self._public_account_search_cache.pop(oldest_key, None)
+            self._public_account_search_cache[cache_key] = (
+                now + PUBLIC_ACCOUNT_SEARCH_CACHE_TTL_SECONDS,
+                response,
             )
-        )
-        response = PublicAccountDirectoryResponse(
-            totalAccounts=len(accounts),
-            accounts=accounts,
-        )
-        self._public_account_directory_cache = (
-            now + PUBLIC_ACCOUNT_DIRECTORY_CACHE_TTL_SECONDS,
-            response,
-        )
         return response
 
     def get_public_user_rankings(self, account_id: str) -> PublicUserRankingsResponse:
