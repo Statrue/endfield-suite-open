@@ -251,8 +251,10 @@ class GuideStrip(QWidget):
 
 
 class RotationOverlayModule:
-    def __init__(self, parent: tk.Tk, controller: RotationGuideController, *, on_meter_change) -> None:
+    def __init__(self, parent: tk.Tk, controller: RotationGuideController, *, on_meter_change,
+                 on_meter_scale=lambda _scale: None) -> None:
         self.parent, self.controller, self.on_meter_change = parent, controller, on_meter_change
+        self.on_meter_scale = on_meter_scale
         self.store = OverlaySettingsStore()
         self.settings = self.store.load()
         self.settings_window = self._sync_label = self._game_context = None
@@ -338,20 +340,23 @@ class RotationOverlayModule:
             self.window.hide()
             self._shown = False
 
-    def apply_module_settings(self, module: str, *, enabled: bool, opacity: float, scale: float = 1.0) -> None:
+    def apply_module_settings(self, module: str, *, enabled: bool, opacity: float, scale: float | None = None) -> None:
         if module == "guide" and not _rotation_client.ROTATION_GUIDANCE_ENABLED:
             raise ValueError("排轴与指导条已停用")
         if module not in {"meter", "guide"} or type(enabled) is not bool or not .35 <= opacity <= 1:
             raise ValueError("浮窗设置无效")
-        if module == "guide" and not .5 <= scale <= 2:
-            raise ValueError("指导条大小无效")
+        if scale is not None and not .5 <= scale <= 2:
+            raise ValueError("指导条大小无效" if module == "guide" else "窗口大小无效")
         self.settings[module + "Enabled"] = enabled
         self.settings[module + "Opacity"] = opacity
+        if scale is not None:
+            self.settings[module + "Scale"] = scale
         if module == "meter":
             self.parent.attributes("-alpha", opacity)
+            if scale is not None:
+                self.on_meter_scale(scale)
             self.on_meter_change(enabled)
         else:
-            self.settings["guideScale"] = scale
             self.window.setWindowOpacity(opacity)
             if not enabled:
                 self.window.hide()

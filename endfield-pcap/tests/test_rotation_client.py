@@ -282,6 +282,17 @@ def test_invalid_guide_scale_never_changes_the_other_overlay_settings(tmp_path, 
     assert value["meterEnabled"] is False and value["opacity"] == 0.8
 
 
+@pytest.mark.parametrize("scale,expected", [
+    (0.5, 0.5), (2, 2.0), (1.5, 1.5), (True, None), ("1.5", None), (0.49, None), (2.01, None), (float("nan"), None),
+])
+def test_meter_scale_is_kept_only_when_valid(tmp_path, scale, expected):
+    store = OverlaySettingsStore(tmp_path / "settings.json")
+    store.save({"meterScale": scale, "meterEnabled": False, "guideScale": 1.5})
+    value = store.load()
+    assert value.get("meterScale") == expected
+    assert value["meterEnabled"] is False and value["guideScale"] == 1.5
+
+
 @pytest.mark.parametrize("anchor", [
     [True, 0.13], [0.5], [0.5, 0.13, 0], [-0.1, 0.13], [0.5, 1.1],
     [float("nan"), 0.13], [0.5, float("inf")], "center", None,

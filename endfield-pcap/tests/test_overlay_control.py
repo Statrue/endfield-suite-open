@@ -55,9 +55,9 @@ class Manager:
 
 class Rotation:
     def __init__(self, store): self.settings = store.load(); self.store=store
-    def apply_module_settings(self, module, *, enabled, opacity):
+    def apply_module_settings(self, module, *, enabled, opacity, scale):
         assert module == "meter"
-        self.settings.update(meterEnabled=enabled, meterOpacity=opacity)
+        self.settings.update(meterEnabled=enabled, meterOpacity=opacity, meterScale=scale)
         self.store.save(self.settings)
 
 
@@ -85,9 +85,10 @@ def test_same_user_private_pipe_controls_host_and_never_uses_offline_config(tmp_
         request=client.submit("update",{"id":identifier,"patch":{"geometry":{"width":660}}})
         _until(lambda:request in finished)
         assert manager.get_entry(identifier)["geometry"]=={"x":777,"y":888,"width":660,"height":320}
-        request=client.submit("meter",{"enabled":False,"opacity":.65})
+        request=client.submit("meter",{"enabled":False,"opacity":.65,"scale":1.5})
         _until(lambda:request in finished)
         assert rotation.settings["meterEnabled"] is False and rotation.settings["meterOpacity"]==.65
+        assert finished[request]["value"]["meterScale"]==1.5
         request=client.submit("diagnostics",{"id":identifier})
         _until(lambda:request in finished)
         assert "TypeError" in finished[request]["value"]
@@ -113,9 +114,13 @@ def test_offline_configuration_is_explicit_and_only_applies_next_start(tmp_path)
         entry=completed[request]["value"]
         assert completed[request]["offlineSaved"] is True and client.snapshot["online"] is False
         assert client.snapshot["capabilities"]=={"configuration":True,"liveActions":False}
-        request=client.submit("meter",{"enabled":False,"opacity":.7})
+        request=client.submit("meter",{"enabled":False,"opacity":.7,"scale":1.25})
         _until(lambda:request in completed)
         assert meter.load()["meterEnabled"] is False and meter.load()["meterOpacity"]==.7
+        assert meter.load()["meterScale"]==1.25 and client.snapshot["meter"]["meterScale"]==1.25
+        request=client.submit("meter",{"enabled":True,"opacity":.7,"scale":2.5})
+        _until(lambda:any(row[0]==request for row in failures))
+        assert "50% 至 200%" in failures[-1][1] and meter.load()["meterEnabled"] is False
         request=client.submit("reload",{"id":entry["id"]})
         _until(lambda:any(row[0]==request for row in failures))
         assert "需要运行中" in failures[-1][1]
@@ -142,7 +147,7 @@ def test_invalid_capability_and_unlisted_operation_cannot_mutate_host(tmp_path):
     bad=QLocalSocket();bad.connectToServer(name)
     try:
         _until(lambda:bad.state()==QLocalSocket.LocalSocketState.ConnectedState)
-        bad.write((json.dumps({"id":uuid.uuid4().hex,"token":"b"*64,"operation":"meter","arguments":{"enabled":False,"opacity":.5}})+"\n").encode())
+        bad.write((json.dumps({"id":uuid.uuid4().hex,"token":"b"*64,"operation":"meter","arguments":{"enabled":False,"opacity":.5,"scale":1.0}})+"\n").encode())
         _until(lambda:bad.state()==QLocalSocket.LocalSocketState.UnconnectedState)
         assert rotation.settings["meterEnabled"] is True
         assert server.server.socketOptions()==control.QLocalServer.SocketOption.UserAccessOption
@@ -159,7 +164,7 @@ def test_disconnect_rejects_pending_mutation_and_never_writes_offline(tmp_path):
     failures=[];client.operationFailed.connect(lambda identifier,message:failures.append((identifier,message)))
     try:
         _until(lambda:client.snapshot["online"])
-        request=client.submit("meter",{"enabled":False,"opacity":.5})
+        request=client.submit("meter",{"enabled":False,"opacity":.5,"scale":1.0})
         server.close()
         _until(lambda:any(row[0]==request for row in failures))
         assert client.snapshot["online"] is False and not client.snapshot["capabilities"]["configuration"]
@@ -213,7 +218,7 @@ def test_actual_separate_process_pipe_applies_meter_settings(tmp_path):
             client=control.OverlayControlClient(name=name,token=token,root=tmp_path/"unused-ui-config",meter_store=OverlaySettingsStore(tmp_path/"unused-meter.json"))
             finished={};client.operationFinished.connect(lambda identifier,result:finished.__setitem__(identifier,result))
             _until(lambda:client.snapshot["online"])
-            request=client.submit("meter",{"enabled":False,"opacity":.55})
+            request=client.submit("meter",{"enabled":False,"opacity":.55,"scale":1.0})
             _until(lambda:request in finished)
             assert finished[request]["snapshot"]["meter"]["meterEnabled"] is False
             assert json.loads((tmp_path/"meter.json").read_text(encoding="utf-8"))["meterOpacity"]==.55
@@ -244,14 +249,14 @@ def test_no_environment_offline_writer_cannot_overwrite_running_host(tmp_path):
             offline.operationFailed.connect(lambda identifier,message:failures.append((identifier,message)))
             offline.operationFinished.connect(lambda identifier,result:completed.__setitem__(identifier,result))
             assert offline.snapshot["capabilities"]["configuration"] is False
-            request=offline.submit("meter",{"enabled":False,"opacity":.65})
+            request=offline.submit("meter",{"enabled":False,"opacity":.65,"scale":1.0})
             _until(lambda:any(row[0]==request for row in failures))
             assert not (tmp_path/"meter.json").exists()
             (tmp_path/"stop").write_text("stop",encoding="utf-8")
             process.wait(timeout=10)
             # A released host lease permits a later offline save; no runtime
             # state is copied from the uploader's stale initial snapshot.
-            request=offline.submit("meter",{"enabled":False,"opacity":.65})
+            request=offline.submit("meter",{"enabled":False,"opacity":.65,"scale":1.0})
             _until(lambda:request in completed)
             assert completed[request]["offlineSaved"] is True
             assert meter.load()["meterOpacity"]==.65
@@ -269,7 +274,7 @@ def test_offline_writer_rechecks_host_lease_after_page_was_opened(tmp_path):
     assert offline.snapshot["capabilities"]["configuration"]
     lease=control.OverlayConfigLease(root);assert lease.held
     try:
-        request=offline.submit("meter",{"enabled":False,"opacity":.5})
+        request=offline.submit("meter",{"enabled":False,"opacity":.5,"scale":1.0})
         _until(lambda:any(row[0]==request for row in failures))
         assert not meter.path.exists()
     finally:lease.close();_finish(offline)

@@ -27,7 +27,7 @@ class ControlFixture(QObject):
         self.entry = self.config.add_entry("效果监控", "file", str(self.html))
         self.requests = []
         self.complete_automatically = True
-        self.snapshot = {"entries": self.config.list_entries(), "meter": {"meterEnabled": True, "meterOpacity": .9, "opacity": .9, "guideScale": 1.0},
+        self.snapshot = {"entries": self.config.list_entries(), "meter": {"meterEnabled": True, "meterOpacity": .9, "opacity": .9, "guideScale": 1.0, "meterScale": 1.0},
                          "online": live, "status": "ready", "capabilities": {"configuration": True, "liveActions": live}}
 
     def list_entries(self):
@@ -55,7 +55,8 @@ class ControlFixture(QObject):
         elif operation == "remove":
             self.config.remove_entry(arguments["id"])
         elif operation == "meter":
-            self.snapshot["meter"].update(meterEnabled=arguments["enabled"], meterOpacity=arguments["opacity"])
+            self.snapshot["meter"].update(meterEnabled=arguments["enabled"], meterOpacity=arguments["opacity"],
+                                          meterScale=arguments["scale"])
         elif operation == "diagnostics":
             value = "仅此窗口的脱敏诊断"
         self.snapshot["entries"] = self.config.list_entries()
@@ -94,7 +95,7 @@ def test_settings_page_is_embedded_and_guidance_absent(form):
     assert not bool(page.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
     assert page.items.count() == 2
     assert [page.items.item(i).text() for i in range(2)] == ["基础 DPS", "效果监控"]
-    assert page.legacy_scale.isHidden() and page.legacy_scale_label.isHidden()
+    assert not page.legacy_scale.isHidden() and page.legacy_scale_label.text() == "窗口大小"
     assert not any("排轴" in page.items.item(i).text() for i in range(page.items.count()))
 
 
@@ -179,11 +180,14 @@ def test_meter_settings_use_same_async_control(form, app):
     page.refresh_list("meter")
     page.legacy_enabled.setChecked(False)
     page.legacy_opacity.setValue(64)
+    page.legacy_scale.setValue(150)
+    assert page.legacy_scale_value.text() == "150%"
     page._save_legacy()
-    assert client.requests[-1][1:] == ("meter", {"enabled": False, "opacity": .64})
+    assert client.requests[-1][1:] == ("meter", {"enabled": False, "opacity": .64, "scale": 1.5})
     flush(app)
     assert client.snapshot["meter"]["meterEnabled"] is False
     assert client.snapshot["meter"]["meterOpacity"] == .64
+    assert client.snapshot["meter"]["meterScale"] == 1.5 and page.legacy_scale.value() == 150
 
 
 def test_selection_change_keeps_dirty_inputs_when_discard_rejected(form, monkeypatch):

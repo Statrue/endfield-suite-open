@@ -6,7 +6,7 @@ Usage: python overlay.py
 import os, re, sys, time, threading, json, math
 import importlib.util
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, font as tkfont
 from collections import OrderedDict
 from functools import lru_cache
 import ctypes as ct
@@ -4461,6 +4461,16 @@ BTN_INACTIVE_FG = "#555555"
 MINI_WINDOW_SIZE = 48
 MINI_ICON_SIZE = 40
 MINI_TRANSPARENT_BG = "#010203"
+# Base (100%) meter layout; the settings page scales all of it together.
+METER_WIDTH = 360
+METER_COLUMN_X = (6, 155, 220, 285, 335)  # name, DPS, crit, total, share
+METER_FONTS = {
+    "mono": ("Consolas", 9, "normal"), "mono_bold": ("Consolas", 9, "bold"),
+    "mono_small": ("Consolas", 8, "normal"), "symbol": ("Segoe UI Symbol", 12, "normal"),
+    "text": ("Microsoft YaHei", 9, "normal"), "text_small": ("Microsoft YaHei", 8, "normal"),
+    "row_text": ("Microsoft YaHei", 10, "normal"), "row_mono": ("Consolas", 10, "normal"),
+    "row_mono_bold": ("Consolas", 10, "bold"),
+}
 
 
 def _find_uploader_logo_path():
@@ -4498,8 +4508,12 @@ class OverlayApp:
         self.root.attributes("-alpha", ALPHA)
         self.root.configure(bg=BG)
 
+        self.meter_scale = 1.0
+        self._scaled_packs = []
+        self.fonts = {name: tkfont.Font(self.root, family=family, size=size, weight=weight)
+                      for name, (family, size, weight) in METER_FONTS.items()}
         screen_w = self.root.winfo_screenwidth()
-        self.win_w = 360
+        self.win_w = METER_WIDTH
         self.win_h = 270
         x = screen_w - self.win_w - 20
         y = 80
@@ -4513,30 +4527,31 @@ class OverlayApp:
 
         # header
         hdr = tk.Frame(self.root, bg=BG)
-        hdr.pack(fill="x", padx=8, pady=(6, 2))
-        tk.Label(hdr, text="Endfield DPS Meter", font=("Consolas", 9, "bold"),
+        self._pack_scaled(hdr, fill="x", padx=8, pady=(6, 2))
+        tk.Label(hdr, text="Endfield DPS Meter", font=self.fonts["mono_bold"],
                  fg=FG_HEAD, bg=BG, anchor="w").pack(side="left")
         min_btn = tk.Canvas(hdr, width=22, height=16, bg=BG,
                             highlightthickness=0, bd=0, cursor="hand2")
         min_line = min_btn.create_line(4, 8, 18, 8, fill="#888888", width=1)
+        self._min_btn = (min_btn, min_line)
         min_btn.bind("<Enter>", lambda e, c=min_btn, line=min_line: c.itemconfig(line, fill="#ffffff"))
         min_btn.bind("<Leave>", lambda e, c=min_btn, line=min_line: c.itemconfig(line, fill="#888888"))
         min_btn.bind("<ButtonPress-1>", self._on_minimize_button_press)
-        min_btn.pack(side="right", padx=(4, 0))
-        reset_btn = tk.Button(hdr, text="\u21bb", font=("Segoe UI Symbol", 12),
+        self._pack_scaled(min_btn, side="right", padx=(4, 0))
+        reset_btn = tk.Button(hdr, text="\u21bb", font=self.fonts["symbol"],
                               fg="#888888", bg=BG, bd=0, activebackground=BG,
                               activeforeground="#ffffff", cursor="hand2",
                               command=self._reset)
         reset_btn.pack(side="right")
-        tk.Label(hdr, text="[右键关闭]", font=("Consolas", 8),
-                 fg="#444444", bg=BG, anchor="e").pack(side="right", padx=(0, 6))
+        self._pack_scaled(tk.Label(hdr, text="[右键关闭]", font=self.fonts["mono_small"],
+                                   fg="#444444", bg=BG, anchor="e"), side="right", padx=(0, 6))
 
         meta = tk.Frame(self.root, bg=BG)
-        meta.pack(fill="x", padx=8, pady=(0, 2))
+        self._pack_scaled(meta, fill="x", padx=8, pady=(0, 2))
         self.stage_label = tk.Label(
             meta,
             text="当前场地：-",
-            font=("Microsoft YaHei", 9),
+            font=self.fonts["text"],
             fg=FG_NAME,
             bg=BG,
             anchor="w",
@@ -4545,7 +4560,7 @@ class OverlayApp:
         self.time_label = tk.Label(
             meta,
             text="战斗时间：--:--.---",
-            font=("Consolas", 9),
+            font=self.fonts["mono"],
             fg=FG_HEAD,
             bg=BG,
             anchor="e",
@@ -4554,33 +4569,33 @@ class OverlayApp:
 
         # column headers
         self.col_cvs = tk.Canvas(self.root, height=20, bg=BG, highlightthickness=0, bd=0)
-        self.col_cvs.pack(fill="x", padx=8, pady=(2, 0))
+        self._pack_scaled(self.col_cvs, fill="x", padx=8, pady=(2, 0))
         self.col_texts = {}
-        for x_pos, anchor, key, text in [
-            (6, "w", "name", "名称"), (155, "e", "val1", "DPS"),
-            (220, "e", "val5", "暴击"), (285, "e", "val3", "总伤害"),
-            (335, "e", "val4", "占比"),
-        ]:
+        for x_pos, (anchor, key, text) in zip(METER_COLUMN_X, [
+            ("w", "name", "名称"), ("e", "val1", "DPS"),
+            ("e", "val5", "暴击"), ("e", "val3", "总伤害"),
+            ("e", "val4", "占比"),
+        ]):
             tid = self.col_cvs.create_text(x_pos, 10, anchor=anchor, text=text,
-                                           font=("Microsoft YaHei", 9), fill=FG_HEAD)
+                                           font=self.fonts["text"], fill=FG_HEAD)
             self.col_texts[key] = tid
 
-        tk.Frame(self.root, bg="#333355", height=1).pack(fill="x", padx=8, pady=2)
+        self._pack_scaled(tk.Frame(self.root, bg="#333355", height=1), fill="x", padx=8, pady=2)
 
         self.rows_frame = tk.Frame(self.root, bg=BG)
-        self.rows_frame.pack(fill="both", expand=True, padx=8, pady=(0, 2))
+        self._pack_scaled(self.rows_frame, fill="both", expand=True, padx=8, pady=(0, 2))
         self.row_widgets = []
 
         # mode buttons
         btn_frame = tk.Frame(self.root, bg=BG)
-        btn_frame.pack(fill="x", padx=8, pady=(0, 6))
-        self.btn_dps = tk.Button(btn_frame, text="DPS", font=("Consolas", 9, "bold"),
+        self._pack_scaled(btn_frame, fill="x", padx=8, pady=(0, 6))
+        self.btn_dps = tk.Button(btn_frame, text="DPS", font=self.fonts["mono_bold"],
                                  fg=BTN_ACTIVE_FG, bg="#333355", bd=0,
                                  activebackground="#444466", activeforeground="#ffffff",
                                  cursor="hand2", padx=12, pady=2,
                                  command=lambda: self._set_mode("DPS"))
-        self.btn_dps.pack(side="left", padx=(0, 4))
-        self.btn_rdps = tk.Button(btn_frame, text="RDPS", font=("Consolas", 9),
+        self._pack_scaled(self.btn_dps, side="left", padx=(0, 4))
+        self.btn_rdps = tk.Button(btn_frame, text="RDPS", font=self.fonts["mono"],
                                   fg=BTN_INACTIVE_FG, bg=BG, bd=0,
                                   activebackground="#333355", activeforeground="#ffffff",
                                   cursor="hand2", padx=12, pady=2,
@@ -4589,6 +4604,7 @@ class OverlayApp:
         self.rotation_controller = RotationGuideController(Path(TRACE_FILE))
         self.rotation_module = RotationOverlayModule(
             self.root, self.rotation_controller, on_meter_change=self._set_meter_enabled,
+            on_meter_scale=self._apply_meter_scale,
         )
         self.window_settings = None
         self.web_overlays = None
@@ -4599,14 +4615,14 @@ class OverlayApp:
         self._web_host_busy = False
         self._web_overlay_error = None
         self._start_web_overlay_host()
-        point = self.rotation_module.settings["positions"].get("meter")
-        if point:
-            x = min(point[0], max(self.root.winfo_screenwidth() - self.win_w, 0))
-            y = min(point[1], max(self.root.winfo_screenheight() - self.win_h, 0))
-            self.root.geometry(f"+{x}+{y}")
+        self._apply_meter_scale(self.rotation_module.settings.get("meterScale", 1.0))
+        point = self.rotation_module.settings["positions"].get("meter") or (screen_w - self.win_w - 20, 80)
+        x = min(point[0], max(self.root.winfo_screenwidth() - self.win_w, 0))
+        y = min(point[1], max(self.root.winfo_screenheight() - self.win_h, 0))
+        self.root.geometry(f"+{x}+{y}")
         self.root.attributes("-alpha", self.rotation_module.settings.get("meterOpacity", self.rotation_module.settings["opacity"]))
         self.root.bind("<ButtonRelease-1>", self._finish_meter_drag)
-        tk.Button(btn_frame, text="悬浮窗设置", font=("Microsoft YaHei", 8),
+        tk.Button(btn_frame, text="悬浮窗设置", font=self.fonts["text_small"],
                   fg=FG_HEAD, bg=BG, bd=0, cursor="hand2",
                   activebackground="#333355", activeforeground="#ffffff",
                   command=self._open_settings).pack(side="right")
@@ -4642,6 +4658,7 @@ class OverlayApp:
             if attempt:
                 settings = self.rotation_module.settings
                 self.root.attributes("-alpha", settings.get("meterOpacity", settings["opacity"]))
+                self._apply_meter_scale(settings.get("meterScale", 1.0))
                 self._set_meter_enabled(settings["meterEnabled"])
             try:
                 self.overlay_control = attach_control_server(self.web_overlays, self.rotation_module,
@@ -4691,13 +4708,13 @@ class OverlayApp:
         if mode == "DPS":
             self.col_cvs.itemconfig(self.col_texts["val1"], text="DPS")
             self.col_cvs.itemconfig(self.col_texts["val3"], text="总伤害")
-            self.btn_dps.config(fg=BTN_ACTIVE_FG, bg="#333355", font=("Consolas", 9, "bold"))
-            self.btn_rdps.config(fg=BTN_INACTIVE_FG, bg=BG, font=("Consolas", 9))
+            self.btn_dps.config(fg=BTN_ACTIVE_FG, bg="#333355", font=self.fonts["mono_bold"])
+            self.btn_rdps.config(fg=BTN_INACTIVE_FG, bg=BG, font=self.fonts["mono"])
         else:
             self.col_cvs.itemconfig(self.col_texts["val1"], text="rDPS")
             self.col_cvs.itemconfig(self.col_texts["val3"], text="rD")
-            self.btn_rdps.config(fg=BTN_ACTIVE_FG, bg="#333355", font=("Consolas", 9, "bold"))
-            self.btn_dps.config(fg=BTN_INACTIVE_FG, bg=BG, font=("Consolas", 9))
+            self.btn_rdps.config(fg=BTN_ACTIVE_FG, bg="#333355", font=self.fonts["mono_bold"])
+            self.btn_dps.config(fg=BTN_INACTIVE_FG, bg=BG, font=self.fonts["mono"])
 
     def _start_drag(self, event):
         self._drag_x = event.x
@@ -4920,16 +4937,61 @@ class OverlayApp:
     def _ensure_rows(self, count):
         while len(self.row_widgets) < count:
             idx = len(self.row_widgets)
-            cvs = tk.Canvas(self.rows_frame, height=24, bg=BG,
+            cvs = tk.Canvas(self.rows_frame, height=self._px(24), bg=BG,
                             highlightthickness=0, bd=0)
-            cvs.pack(fill="x", pady=1)
-            bar_id = cvs.create_rectangle(0, 0, 0, 24, fill=BAR_COLORS[idx % len(BAR_COLORS)], outline="")
-            name_id  = cvs.create_text(6,   12, anchor="w", text="", font=("Microsoft YaHei", 10), fill=FG_NAME)
-            dps_id   = cvs.create_text(155, 12, anchor="e", text="", font=("Consolas", 10, "bold"), fill=FG_DPS)
-            crit_id  = cvs.create_text(220, 12, anchor="e", text="", font=("Consolas", 10), fill=FG_CRIT)
-            total_id = cvs.create_text(285, 12, anchor="e", text="", font=("Consolas", 10), fill=FG_TOTAL)
-            pct_id   = cvs.create_text(335, 12, anchor="e", text="", font=("Consolas", 10), fill=FG_PCT)
+            cvs.pack(fill="x", pady=self._px(1))
+            bar_id = cvs.create_rectangle(0, 0, 0, self._px(24), fill=BAR_COLORS[idx % len(BAR_COLORS)], outline="")
+            name_id  = cvs.create_text(0, 0, anchor="w", text="", font=self.fonts["row_text"], fill=FG_NAME)
+            dps_id   = cvs.create_text(0, 0, anchor="e", text="", font=self.fonts["row_mono_bold"], fill=FG_DPS)
+            crit_id  = cvs.create_text(0, 0, anchor="e", text="", font=self.fonts["row_mono"], fill=FG_CRIT)
+            total_id = cvs.create_text(0, 0, anchor="e", text="", font=self.fonts["row_mono"], fill=FG_TOTAL)
+            pct_id   = cvs.create_text(0, 0, anchor="e", text="", font=self.fonts["row_mono"], fill=FG_PCT)
+            self._place_columns(cvs, (name_id, dps_id, crit_id, total_id, pct_id), 12)
             self.row_widgets.append((cvs, bar_id, name_id, dps_id, crit_id, total_id, pct_id))
+
+    def _px(self, value):
+        if isinstance(value, tuple):
+            return tuple(self._px(part) for part in value)
+        return max(round(value * self.meter_scale), 1 if value else 0)
+
+    def _pack_scaled(self, widget, *, padx=0, pady=0, **options):
+        self._scaled_packs.append((widget, padx, pady))
+        widget.pack(padx=self._px(padx), pady=self._px(pady), **options)
+
+    def _place_columns(self, canvas, item_ids, y):
+        for item_id, x in zip(item_ids, METER_COLUMN_X):
+            canvas.coords(item_id, self._px(x), self._px(y))
+
+    def _meter_height(self, rows):
+        # Base chrome includes header, boss/time status row, column header,
+        # separator and bottom mode buttons.
+        return self._px(128 + max(rows, 1) * 26)
+
+    def _apply_meter_scale(self, scale):
+        self.meter_scale = scale
+        for name, font in self.fonts.items():
+            font.configure(size=max(round(METER_FONTS[name][1] * scale), 1))
+        for widget, padx, pady in self._scaled_packs:
+            widget.pack_configure(padx=self._px(padx), pady=self._px(pady))
+        min_btn, min_line = self._min_btn
+        min_btn.configure(width=self._px(22), height=self._px(16))
+        min_btn.coords(min_line, self._px(4), self._px(8), self._px(18), self._px(8))
+        self.col_cvs.configure(height=self._px(20))
+        self._place_columns(self.col_cvs, self.col_texts.values(), 10)
+        for button in (self.btn_dps, self.btn_rdps):
+            button.configure(padx=self._px(12), pady=self._px(2))
+        for cvs, bar_id, *text_ids in self.row_widgets:
+            cvs.configure(height=self._px(24))
+            cvs.coords(bar_id, 0, 0, cvs.coords(bar_id)[2], self._px(24))
+            self._place_columns(cvs, text_ids, 12)
+        old_w = self.win_w
+        self.win_w = self._px(METER_WIDTH)
+        self.win_h = self._meter_height(sum(1 for row in self.row_widgets if row[0].winfo_manager()))
+        self.root.geometry(f"{self.win_w}x{self.win_h}")
+        x, screen_w = self.root.winfo_x(), self.root.winfo_screenwidth()
+        if self.root.winfo_ismapped() and x + old_w <= screen_w < x + self.win_w:
+            # Grow leftwards instead of past the right screen edge.
+            self.root.geometry(f"+{max(screen_w - self.win_w, 0)}+{self.root.winfo_y()}")
 
     def _update(self):
         service_status = read_service_status()
@@ -5027,14 +5089,14 @@ class OverlayApp:
             display_colors = assign_distinct_bar_colors([s.name for s in stats])
             for i, s in enumerate(stats):
                 cvs, bar_id, name_id, dps_id, crit_id, total_id, pct_id = self.row_widgets[i]
-                cvs.pack(fill="x", pady=1)
+                cvs.pack(fill="x", pady=self._px(1))
                 cvs.update_idletasks()
                 w = cvs.winfo_width()
                 pct = s.total_dmg / team_total * 100.0
                 bar_w = max(int(w * pct / 100.0), 4)
                 color = display_colors.get(s.name, stable_bar_color(s.name))
                 cvs.itemconfig(bar_id, fill=color)
-                cvs.coords(bar_id, 0, 0, bar_w, 24)
+                cvs.coords(bar_id, 0, 0, bar_w, self._px(24))
                 cvs.itemconfig(name_id, text=friendly_name(s.name))
                 cvs.itemconfig(dps_id, text=f"{s.dps:.1f}")
                 cvs.itemconfig(crit_id, text=crit_text(s.crit_n, s.crit_c))
@@ -5045,14 +5107,14 @@ class OverlayApp:
             display_colors = assign_distinct_bar_colors([s.name for s in stats])
             for i, s in enumerate(stats):
                 cvs, bar_id, name_id, dps_id, crit_id, total_id, pct_id = self.row_widgets[i]
-                cvs.pack(fill="x", pady=1)
+                cvs.pack(fill="x", pady=self._px(1))
                 cvs.update_idletasks()
                 w = cvs.winfo_width()
                 pct = s.total_rd / team_total * 100.0
                 bar_w = max(int(w * pct / 100.0), 4)
                 color = display_colors.get(s.name, stable_bar_color(s.name))
                 cvs.itemconfig(bar_id, fill=color)
-                cvs.coords(bar_id, 0, 0, bar_w, 24)
+                cvs.coords(bar_id, 0, 0, bar_w, self._px(24))
                 dps_stats = crit_lookup.get(s.name) if crit_lookup else None
                 cn, cc = (dps_stats.crit_n, dps_stats.crit_c) if dps_stats else (0, 0)
                 suffix = "" if rdps_available else " *"
@@ -5065,9 +5127,7 @@ class OverlayApp:
         for i in range(len(stats), len(self.row_widgets)):
             self.row_widgets[i][0].pack_forget()
 
-        # Base chrome now includes header, boss/time status row, column header,
-        # separator and bottom mode buttons.
-        needed = 128 + max(len(stats), 1) * 26
+        needed = self._meter_height(len(stats))
         if needed != self.win_h:
             self.win_h = needed
             x = self.root.winfo_x()
