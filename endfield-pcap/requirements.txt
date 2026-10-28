@@ -6,4 +6,4 @@ grpcio-tools==1.80.0
 websockets
 pyinstaller
 httpx[socks]
-PySide6==6.11.0
+PySide6==6.11.3
