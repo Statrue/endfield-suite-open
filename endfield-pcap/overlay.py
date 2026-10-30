@@ -4984,14 +4984,21 @@ class OverlayApp:
             cvs.configure(height=self._px(24))
             cvs.coords(bar_id, 0, 0, cvs.coords(bar_id)[2], self._px(24))
             self._place_columns(cvs, text_ids, 12)
-        old_w = self.win_w
+        old_w, old_h = self.win_w, self.win_h
+        x, y = self.root.winfo_x(), self.root.winfo_y()
         self.win_w = self._px(METER_WIDTH)
         self.win_h = self._meter_height(sum(1 for row in self.row_widgets if row[0].winfo_manager()))
         self.root.geometry(f"{self.win_w}x{self.win_h}")
-        x, screen_w = self.root.winfo_x(), self.root.winfo_screenwidth()
-        if self.root.winfo_ismapped() and x + old_w <= screen_w < x + self.win_w:
-            # Grow leftwards instead of past the right screen edge.
-            self.root.geometry(f"+{max(screen_w - self.win_w, 0)}+{self.root.winfo_y()}")
+        if self.root.winfo_ismapped():
+            screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            next_x, next_y = x, y
+            if x + old_w <= screen_w < x + self.win_w:
+                next_x = max(screen_w - self.win_w, 0)
+            if y + old_h <= screen_h < y + self.win_h:
+                next_y = max(screen_h - self.win_h, 0)
+            # Grow leftwards/upwards when an otherwise visible window would overflow.
+            if (next_x, next_y) != (x, y):
+                self.root.geometry(f"{next_x:+d}{next_y:+d}")
 
     def _update(self):
         service_status = read_service_status()
