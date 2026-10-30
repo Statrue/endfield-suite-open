@@ -177,9 +177,10 @@ class OverlaySettingsStore:
                 point = positions.get(key)
                 if isinstance(point, list) and len(point) == 2 and all(type(v) is int and 0 <= v <= 100_000 for v in point):
                     defaults["positions"][key] = list(point)
-        scale = payload.get("guideScale")
-        if type(scale) in (int, float) and 0.5 <= scale <= 2:
-            defaults["guideScale"] = float(scale)
+        for key in ("guideScale", "meterScale"):
+            scale = payload.get(key)
+            if type(scale) in (int, float) and 0.5 <= scale <= 2:
+                defaults[key] = float(scale)
         anchor = payload.get("guideAnchor")
         if (isinstance(anchor, list) and len(anchor) == 2
                 and all(type(value) in (int, float) and 0 <= value <= 1 for value in anchor)):

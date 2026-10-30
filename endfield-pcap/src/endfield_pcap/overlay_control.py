@@ -62,16 +62,20 @@ class OverlayConfigLease:
 def _meter_view(settings: dict) -> dict:
     return {"meterEnabled": bool(settings["meterEnabled"]),
             "meterOpacity": float(settings.get("meterOpacity", settings["opacity"])),
-            "opacity": float(settings["opacity"]), "guideScale": 1.0}
+            "opacity": float(settings["opacity"]), "guideScale": 1.0,
+            "meterScale": float(settings.get("meterScale", 1.0))}
 
 
-def _meter_arguments(arguments: dict) -> tuple[bool, float]:
-    if set(arguments) != {"enabled", "opacity"} or type(arguments["enabled"]) is not bool:
+def _meter_arguments(arguments: dict) -> tuple[bool, float, float]:
+    if set(arguments) != {"enabled", "opacity", "scale"} or type(arguments["enabled"]) is not bool:
         raise ValueError("基础 DPS 设置无效。")
     opacity = arguments["opacity"]
     if type(opacity) not in (float, int) or not .35 <= opacity <= 1:
         raise ValueError("基础 DPS 透明度应为 35% 至 100%。")
-    return arguments["enabled"], float(opacity)
+    scale = arguments["scale"]
+    if type(scale) not in (float, int) or not .5 <= scale <= 2:
+        raise ValueError("基础 DPS 窗口大小应为 50% 至 200%。")
+    return arguments["enabled"], float(opacity), float(scale)
 
 
 def _arguments(operation: str, arguments: object) -> dict:
@@ -79,7 +83,7 @@ def _arguments(operation: str, arguments: object) -> dict:
         raise ValueError("不支持的悬浮窗操作。")
     expected = {"snapshot": set(), "add": {"name", "sourceType", "sourceValue"},
                 "update": {"id", "patch"}, "remove": {"id"}, "reload": {"id"},
-                "recover": {"id"}, "meter": {"enabled", "opacity"}, "diagnostics": {"id"}}[operation]
+                "recover": {"id"}, "meter": {"enabled", "opacity", "scale"}, "diagnostics": {"id"}}[operation]
     if set(arguments) != expected:
         raise ValueError("悬浮窗操作参数无效。")
     if "id" in arguments and (not isinstance(arguments["id"], str) or len(arguments["id"]) > 64):
@@ -188,8 +192,8 @@ class OverlayControlServer(QObject):
         if operation == "add":
             return self.manager.add_entry(arguments["name"], arguments["sourceType"], arguments["sourceValue"])
         if operation == "meter":
-            enabled, opacity = _meter_arguments(arguments)
-            self.rotation.apply_module_settings("meter", enabled=enabled, opacity=opacity)
+            enabled, opacity, scale = _meter_arguments(arguments)
+            self.rotation.apply_module_settings("meter", enabled=enabled, opacity=opacity, scale=scale)
             return _meter_view(self.rotation.settings)
         identifier = arguments["id"]
         self.manager.get_entry(identifier)
@@ -265,7 +269,8 @@ class OverlayControlClient(QObject):
             meter = _meter_view(self._meter_store.load())
             error = None
         except (ValueError, OSError) as exc:
-            entries, meter, error = [], {"meterEnabled": True, "meterOpacity": .9, "opacity": .9, "guideScale": 1.0}, safe_text(exc)
+            entries, meter, error = [], {"meterEnabled": True, "meterOpacity": .9, "opacity": .9, "guideScale": 1.0,
+                                         "meterScale": 1.0}, safe_text(exc)
         available = False
         if error is None:
             try:
@@ -401,9 +406,9 @@ class OverlayControlClient(QObject):
                 value = config.update_entry(arguments["id"], **patch)
             elif operation == "remove": value = config.remove_entry(arguments["id"])
             elif operation == "meter":
-                enabled, opacity = _meter_arguments(arguments)
+                enabled, opacity, scale = _meter_arguments(arguments)
                 settings = self._meter_store.load()
-                settings.update(meterEnabled=enabled, meterOpacity=opacity)
+                settings.update(meterEnabled=enabled, meterOpacity=opacity, meterScale=scale)
                 self._meter_store.save(settings)
                 value = _meter_view(settings)
             elif operation == "diagnostics":

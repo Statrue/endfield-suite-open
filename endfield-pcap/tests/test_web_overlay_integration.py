@@ -33,6 +33,9 @@ def _runtime(root, contention=False):
     root.mkdir(parents=True, exist_ok=True)
     trace = root / "trace.log"
     trace.write_text("", encoding="utf-8")
+    meter_settings = root / "app-data" / "EndfieldPCAP" / "overlay_settings.json"
+    meter_settings.parent.mkdir(parents=True, exist_ok=True)
+    meter_settings.write_text(json.dumps({"meterScale": 1.25}), encoding="utf-8")
     status = root / "status.json"
     status.write_text(json.dumps({"state": "waiting_connection"}), encoding="utf-8")
     os.environ.update(ENDFIELD_OVERLAY_ALLOW_MULTIPLE="1", ENDFIELD_PCAP_TRACE_FILE=str(trace),
@@ -45,6 +48,7 @@ def _runtime(root, contention=False):
     if lease is not None:
         assert lease.held
     meter = values["OverlayApp"]()
+    assert meter.win_w == 450 and meter.fonts["row_text"].cget("size") == 12
     meter.root.withdraw()
     try:
         if lease is not None:
@@ -83,7 +87,35 @@ def _runtime(root, contention=False):
         except ValueError:
             pass
         meter.rotation_module.apply_module_settings("meter", enabled=True, opacity=.8)
-        assert meter.rotation_module.settings["meterOpacity"] == .8
+        assert meter.rotation_module.settings["meterOpacity"] == .8 and meter.meter_scale == 1.25
+        meter._ensure_rows(1)
+        meter.rotation_module.apply_module_settings("meter", enabled=True, opacity=.8, scale=1.5)
+        row = meter.row_widgets[0]
+        assert meter.win_w == 540 and meter.fonts["row_text"].cget("size") == 15
+        assert int(row[0].cget("height")) == 36 and row[0].coords(row[4]) == [330.0, 18.0]
+        assert meter.rotation_module.store.load()["meterScale"] == 1.5
+        # A four-row meter near the bottom-right must stay fully on screen
+        # when enlarged; shrinking or resizing with enough room keeps its position.
+        meter._ensure_rows(4)
+        meter._apply_meter_scale(1.0)
+        meter.root.attributes("-alpha", 0)
+        meter.root.deiconify()
+        screen_w, screen_h = meter.root.winfo_screenwidth(), meter.root.winfo_screenheight()
+        meter.root.geometry(f"+{screen_w - meter.win_w - 20}+{screen_h - meter.win_h - 20}")
+        meter.root.update_idletasks()
+        meter._apply_meter_scale(2.0)
+        meter.root.update_idletasks()
+        assert meter.root.winfo_x() + meter.root.winfo_width() == screen_w
+        assert meter.root.winfo_y() + meter.root.winfo_height() == screen_h
+        position = (meter.root.winfo_x(), meter.root.winfo_y())
+        meter._apply_meter_scale(1.0)
+        meter.root.update_idletasks()
+        assert (meter.root.winfo_x(), meter.root.winfo_y()) == position
+        meter.root.geometry("+20+20")
+        meter.root.update_idletasks()
+        meter._apply_meter_scale(1.5)
+        meter.root.update_idletasks()
+        assert (meter.root.winfo_x(), meter.root.winfo_y()) == (20, 20)
         print("INTEGRATED_OVERLAY_OK")
     finally:
         if lease is not None: lease.close()

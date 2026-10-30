@@ -137,7 +137,7 @@ class OverlaySettingsPage(QWidget):
             spin.valueChanged.connect(self._mark_dirty)
         for check in [*self.flags.values(), self.legacy_enabled]:
             check.toggled.connect(self._mark_dirty)
-        for slider in (self.opacity, self.legacy_opacity):
+        for slider in (self.opacity, self.legacy_opacity, self.legacy_scale):
             slider.valueChanged.connect(self._mark_dirty)
         if self._remote:
             manager.snapshotChanged.connect(self._snapshot_changed)
@@ -167,11 +167,18 @@ class OverlaySettingsPage(QWidget):
         self.legacy_opacity.valueChanged.connect(lambda value: self.legacy_opacity_value.setText(f"{value}%"))
         slider.addWidget(self.legacy_opacity_value)
         layout.addLayout(slider)
-        self.legacy_scale_label = QLabel("指导条大小")
+        self.legacy_scale_label = QLabel("窗口大小")
+        layout.addWidget(self.legacy_scale_label)
         self.legacy_scale = QSlider(Qt.Orientation.Horizontal)
         self.legacy_scale.setRange(50, 200)
-        layout.addWidget(self.legacy_scale_label)
-        layout.addWidget(self.legacy_scale)
+        slider = QHBoxLayout()
+        slider.addWidget(self.legacy_scale, 1)
+        self.legacy_scale_value = QLabel()
+        self.legacy_scale_value.setFixedWidth(42)
+        self.legacy_scale.valueChanged.connect(lambda value: self.legacy_scale_value.setText(f"{value}%"))
+        self.legacy_scale.setValue(100)
+        slider.addWidget(self.legacy_scale_value)
+        layout.addLayout(slider)
         self.legacy_description = QLabel()
         self.legacy_description.setWordWrap(True)
         self.legacy_description.setProperty("muted", True)
@@ -412,15 +419,14 @@ class OverlaySettingsPage(QWidget):
             guide = key == "guide"
             self.legacy_title.setText("排轴指导" if guide else "基础 DPS")
             self.pages.currentWidget().setEnabled(self._remote or self.rotation is not None)
-            self.legacy_scale.setVisible(guide)
-            self.legacy_scale_label.setVisible(guide)
+            self.legacy_scale_label.setText("指导条大小" if guide else "窗口大小")
             self.legacy_buttons.setVisible(guide)
             if self.rotation or self._remote:
                 settings = self.manager.snapshot.get("meter", {}) if self._remote else self.rotation.settings
                 self.legacy_enabled.setChecked(settings["guideEnabled" if guide else "meterEnabled"])
                 self.legacy_opacity.setValue(round(settings.get("guideOpacity" if guide else "meterOpacity", settings["opacity"]) * 100))
-                self.legacy_scale.setValue(round(settings["guideScale"] * 100))
-            self.legacy_description.setText("地图和阵容匹配后，按已验证的官方时钟提供指导。" if guide else "显示队伍 DPS / rDPS 统计，可单独调整窗口透明度。")
+                self.legacy_scale.setValue(round(settings.get("guideScale" if guide else "meterScale", 1.0) * 100))
+            self.legacy_description.setText("地图和阵容匹配后，按已验证的官方时钟提供指导。" if guide else "显示队伍 DPS / rDPS 统计，可单独调整窗口透明度和大小。")
             return
         entry = next((row for row in self.manager.list_entries() if row["id"] == key), None)
         if entry is None:
@@ -577,7 +583,8 @@ class OverlaySettingsPage(QWidget):
         if self._selected_id == "guide" and not _rotation_client.ROTATION_GUIDANCE_ENABLED:
             return
         if self._remote:
-            self._request("meter", {"enabled": self.legacy_enabled.isChecked(), "opacity": self.legacy_opacity.value() / 100}, saved=True)
+            self._request("meter", {"enabled": self.legacy_enabled.isChecked(), "opacity": self.legacy_opacity.value() / 100,
+                                    "scale": self.legacy_scale.value() / 100}, saved=True)
             return
         if self.rotation:
             try:

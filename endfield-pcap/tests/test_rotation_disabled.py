@@ -84,10 +84,11 @@ def test_disabled_guide_keeps_qt_pump_meter_settings_and_html_list(application, 
     store.save(original)
     monkeypatch.setattr(rotation_overlay, "OverlaySettingsStore", lambda: store)
     monkeypatch.setattr(rotation_overlay.webbrowser, "open", forbidden)
-    parent, meter_changes = Parent(), []
+    parent, meter_changes, scale_changes = Parent(), [], []
     controller = SimpleNamespace(set_available=forbidden, snapshot=forbidden,
                                  sync_state=forbidden, request_sync=forbidden)
-    module = rotation_overlay.RotationOverlayModule(parent, controller, on_meter_change=meter_changes.append)
+    module = rotation_overlay.RotationOverlayModule(parent, controller, on_meter_change=meter_changes.append,
+                                                    on_meter_scale=scale_changes.append)
     module.window.show()
     module.update(available=True, game_bounds=(0, 0, 1920, 1080))
     assert not module.window.isVisible() and not module._shown
@@ -103,6 +104,12 @@ def test_disabled_guide_keeps_qt_pump_meter_settings_and_html_list(application, 
     saved = json.loads(store.path.read_text(encoding="utf-8"))
     assert saved["guideEnabled"] is True and saved["positions"] == original["positions"]
     assert saved["guideOpacity"] == .7 and saved["guideScale"] == 1.3
+    assert scale_changes == [] and "meterScale" not in saved
+    module.apply_module_settings("meter", enabled=False, opacity=.6, scale=1.5)
+    assert scale_changes == [1.5]
+    assert json.loads(store.path.read_text(encoding="utf-8"))["meterScale"] == 1.5
+    with pytest.raises(ValueError, match="窗口大小无效"):
+        module.apply_module_settings("meter", enabled=False, opacity=.6, scale=2.5)
     with pytest.raises(ValueError, match="已停用"):
         module.apply_module_settings("guide", enabled=True, opacity=.7)
     module.open_editor()
@@ -111,7 +118,8 @@ def test_disabled_guide_keeps_qt_pump_meter_settings_and_html_list(application, 
     assert [dialog.items.item(i).data(Qt.ItemDataRole.UserRole) for i in range(dialog.items.count())] == ["meter", "html-example"]
     assert not {"网站编辑", "立即同步", "恢复指导条位置"}.intersection(
         button.text() for button in dialog.findChildren(QPushButton))
-    assert dialog.legacy_scale.isHidden() and dialog.legacy_buttons.isHidden()
+    assert not dialog.legacy_scale.isHidden() and dialog.legacy_scale.value() == 150
+    assert dialog.legacy_buttons.isHidden()
     before = store.path.read_bytes()
     dialog._open_editor()
     dialog._sync()

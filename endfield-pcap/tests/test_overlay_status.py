@@ -171,7 +171,7 @@ def _meter_update_stub(monkeypatch, failures, *, hide_raises=False):
     meter.root, meter.tailer, meter.rotation_module = RootStub(), TailerStub(), GuideStub()
     meter.stage_label, meter.time_label = LabelStub(), LabelStub()
     meter.mode, meter.row_widgets = "DPS", []
-    meter.win_w, meter.win_h = 360, 154
+    meter.win_w, meter.win_h, meter.meter_scale = 360, 154, 1.0
     meter._fatal_shutdown_scheduled = False
     meter._ensure_rows = lambda count: None
     monkeypatch.setattr(overlay, "STATUS_FILE", "owned-status-stub")
